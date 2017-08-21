@@ -5,12 +5,23 @@ required = object()
 
 class Optimizer_1(Optimizer):
     """Implements Neural Optimizer Search's Optimizer_1 for PyTorch
+    
+    Proposed in 'Neural Optimizer Search with Reinforcement Learning' by 
+    Irwan Bello, Barret Zoph, Vijay Vasudevan and Quoc Le
+    
+    http://proceedings.mlr.press/v70/bello17a/bello17a.pdf
+    
+    Arguments:
+      params (iterable): iterable of parameters to optimize or dicts defining
+         parameter groups
+      lr (float, optional): learning rate (default: 1e-3)
+      beta (float, optional): decay for the running exponential average
+         (momentum) range (0,1) (default: 0.9)
+      weight_decay (float, optional): weight decay (L2 penalty) (default: 0)
     """
 
-    def __init__(self, params, lr=required, momentum=0.99, dampening=0,
-                 weight_decay=0):
-        defaults = dict(lr=lr, momentum=momentum, dampening=dampening,
-                        weight_decay=weight_decay)
+    def __init__(self, params, lr=1e-3, beta=0.9, weight_decay=0):
+        defaults = dict(lr=lr, beta=beta, weight_decay=weight_decay)
         super(Optimizer_1, self).__init__(params, defaults)
 
     def __setstate__(self, state):
@@ -27,26 +38,35 @@ class Optimizer_1(Optimizer):
             loss = closure()
 
         for group in self.param_groups:
-            weight_decay = group['weight_decay']
-            momentum = group['momentum']
-            dampening = group['dampening']
-
             for p in group['params']:
                 if p.grad is None:
                     continue
-                d_p = p.grad.data
-                if weight_decay != 0:
-                    d_p.add_(weight_decay, p.data)
-                if momentum != 0:
-                    param_state = self.state[p]
-                    if 'momentum_buffer' not in param_state:
-                        buf = param_state['momentum_buffer'] = d_p.clone()
-                    else:
-                        buf = param_state['momentum_buffer']
-                        buf.mul_(momentum).add_(1 - dampening, d_p)
-                # Update rule: g * e(sign(g)*sign(m))
-                d_p = d_p.mul(torch.exp(torch.sign(d_p)*torch.sign(buf)))
-
-                p.data.add_(-group['lr'], d_p)
-
+                grad = p.grad.data
+                state = self.state[p]
+                
+                # State initialization
+                if len(state) == 0:
+                    # Times step has been called. Used for bias correction.
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = grad.new().resize_as_(grad).zero_()
+                
+                exp_avg = state['exp_avg']
+                beta = group['beta']
+                
+                state['step'] += 1
+                
+                # Apply weight decay (L2 penalty)
+                if group['weight_decay'] != 0:
+                    grad = grad.add(group['weight_decay'], p.data)
+                
+                # Decay the momentum running average coefficient
+                exp_avg.mul_(beta).add_(1 - beta, grad)
+                
+                # Correct bias from early elements of the running average
+                avg_corr = exp_avg / (1 - beta ** state['step'])
+                
+                update = grad.mul(torch.exp(torch.sign(grad) * torch.sign(avg_corr)))
+                
+                p.data.add_(-group['lr'], update)
         return loss
